@@ -3513,10 +3513,12 @@ async function handleBackupExport(req, res, user) {
       let from = 0;
       const PAGE = 1000;
       while (true) {
+        // Usamos orden secundario por ID para garantizar paginación estable
         const { data, error } = await sb
           .from(tableName)
           .select('*')
           .order(orderBy, { ascending: !descending })
+          .order('id', { ascending: true }) 
           .range(from, from + PAGE - 1);
         if (error || !data || data.length === 0) break;
         all = all.concat(data);
@@ -3559,7 +3561,7 @@ async function handleBackupExport(req, res, user) {
       sq(sb.from('raice_commitments').select('*').order('due_date', { ascending: false })),
       sq(sb.from('raice_observations').select('*').order('created_at', { ascending: false })),
       sq(sb.from('raice_acudientes').select('*')),
-      sq(sb.from('raice_users').select('id,username,first_name,last_name,email,role,active,last_login').neq('role','superadmin')),
+      sq(sb.from('raice_users').select('*').neq('role','superadmin')),
       sq(sb.from('raice_courses').select('*').order('grade').order('number')),
       sq(sb.from('raice_schedules').select('*')),
       sq(sb.from('raice_bell_schedule').select('*').order('class_hour')),
@@ -5341,9 +5343,16 @@ async function handleBackupImport(req, res, user) {
     'raice_teacher_courses', 'raice_schedules', 'raice_classroom_removals',
     'raice_suspensions', 'raice_cases', 'raice_acudientes', 'raice_students',
     'raice_courses', 'raice_bell_schedule', 'raice_faltas_catalogo',
-    'raice_periods', 'raice_calendar'
+    'raice_periods', 'raice_calendar', 'raice_users'
   ];
-  for (const table of tablesToClear) { await clearTable(table); }
+  for (const table of tablesToClear) { 
+    if (table === 'raice_users') {
+      // No borrar al administrador que está operando ahora
+      await sb.from('raice_users').delete().neq('id', adminRow.id);
+    } else {
+      await clearTable(table); 
+    }
+  }
   // ─────────────────────────────────────────────────────────────────────────
 
   // Upsert en lotes — captura errores por tabla sin abortar el resto
@@ -5392,38 +5401,24 @@ async function handleBackupImport(req, res, user) {
   results.courses = await upsertBatch('raice_courses', coursesNullDir);
 
   if (t.teachers?.length) {
-    // IDs existentes
-    const ids = t.teachers.map(u => u.id);
-    const { data: existingUsers } = await sb.from('raice_users').select('id').in('id', ids);
-    const existingSet = new Set((existingUsers || []).map(u => u.id));
+    const tempHash = await bcrypt.hash('Raice2026*', 10);
+    const teacherRows = t.teachers.map(u => ({
+      id: u.id,
+      username: u.username,
+      first_name: u.first_name,
+      last_name: u.last_name || '',
+      email: u.email || null,
+      role: u.role,
+      active: u.active ?? true,
+      password_hash: u.password_hash || tempHash,
+      must_change_password: u.must_change_password ?? false,
+      subject: u.subject || null,
+      created_at: u.created_at || new Date().toISOString()
+    }));
 
-    // Dividir en lote para actualización e inserción
-    const toUpdate = t.teachers.filter(u => existingSet.has(u.id));
-    const toInsert = t.teachers.filter(u => !existingSet.has(u.id));
-
-    // 1. Bulk Update para existentes (campos no sensibles)
-    if (toUpdate.length) {
-      for (const b of toUpdate) {
-        const { error } = await sb.from('raice_users').update({
-          username: b.username, first_name: b.first_name, last_name: b.last_name,
-          email: b.email || null, role: b.role, active: b.active ?? true
-        }).eq('id', b.id);
-        if (error) errors.push(`user_update ${b.username}: ${error.message}`);
-      }
-    }
-
-    // 2. Bulk Insert para nuevos co contraseña temporal
-    if (toInsert.length) {
-      const tempHash = await bcrypt.hash('Cambiar123!', 10);
-      const insertRows = toInsert.map(u => ({
-        id: u.id, username: u.username, first_name: u.first_name,
-        last_name: u.last_name, email: u.email || null,
-        role: u.role, active: u.active ?? true, password_hash: tempHash
-      }));
-      // Bulk insert
-      const { error } = await sb.from('raice_users').insert(insertRows);
-      if (error) errors.push('users_insert: ' + error.message);
-    }
+    // Usamos Upsert por username para manejar posibles duplicados tras la limpieza parcial
+    const { error } = await sb.from('raice_users').upsert(teacherRows, { onConflict: 'username' });
+    if (error) errors.push('users_upsert: ' + error.message);
     results.users = t.teachers.length;
   }
 
