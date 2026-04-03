@@ -3507,17 +3507,16 @@ async function handleBackupExport(req, res, user) {
     // Cada consulta retorna [] si falla — un error en una tabla no rompe todo el backup
     const sq = (promise) => promise.then(r => r.data || []).catch(() => []);
 
-    // ── Tablas con paginación (pueden tener muchos registros) ──────────────────
-    // Asistencia: se pagina de 10.000 en 10.000 hasta traer todo
-    async function fetchAllAttendance() {
+    // ── Pagination Helper for all large tables ──────────────────────────────
+    async function fetchAll(tableName, orderBy = 'created_at', descending = true) {
       let all = [];
       let from = 0;
-      const PAGE = 1000; // Supabase default max_rows es 1000 — paginar en bloques de 1000
+      const PAGE = 1000;
       while (true) {
         const { data, error } = await sb
-          .from('raice_attendance')
+          .from(tableName)
           .select('*')
-          .order('date', { ascending: false })
+          .order(orderBy, { ascending: !descending })
           .range(from, from + PAGE - 1);
         if (error || !data || data.length === 0) break;
         all = all.concat(data);
@@ -3550,9 +3549,7 @@ async function handleBackupExport(req, res, user) {
       periods,
       config,
       calendar,
-      notifications,
       studentGradeHistory,
-      logs,
       tipo1Escalones,
     ] = await Promise.all([
       sq(sb.from('raice_students').select('*').order('grade').order('last_name')),
@@ -3576,14 +3573,14 @@ async function handleBackupExport(req, res, user) {
       sq(sb.from('raice_periods').select('*').order('created_at', { ascending: false })),
       sq(sb.from('raice_config').select('*')),
       sq(sb.from('raice_calendar').select('*').order('date', { ascending: false })),
-      sq(sb.from('raice_notifications').select('*').order('created_at', { ascending: false })),
       sq(sb.from('raice_student_grade_history').select('*').order('changed_at', { ascending: false })),
-      sq(sb.from('raice_logs').select('*').order('created_at', { ascending: false })),
       sq(sb.from('raice_tipo1_escalones').select('*').order('created_at', { ascending: false })),
     ]);
 
-    // Asistencia paginada (sin límite)
-    const attendance = await fetchAllAttendance();
+    // Grandes Volúmenes: Paginado
+    const attendance    = await fetchAll('raice_attendance', 'date');
+    const logs          = await fetchAll('raice_logs', 'created_at');
+    const notifications = await fetchAll('raice_notifications', 'created_at');
 
     const backup = {
       exported_at: new Date().toISOString(),
@@ -5374,31 +5371,37 @@ async function handleBackupImport(req, res, user) {
   const coursesNullDir = (t.courses || []).map(c => ({ ...c, director_id: null }));
   results.courses = await upsertBatch('raice_courses', coursesNullDir);
 
-  // ── 3. Usuarios (docentes) — no sobrescribir contraseña si ya existen ────
   if (t.teachers?.length) {
+    // IDs existentes
     const ids = t.teachers.map(u => u.id);
-    const { data: existing } = await sb.from('raice_users').select('id').in('id', ids);
-    const existingSet = new Set((existing || []).map(u => u.id));
+    const { data: existingUsers } = await sb.from('raice_users').select('id').in('id', ids);
+    const existingSet = new Set((existingUsers || []).map(u => u.id));
 
-    // Actualizar existentes (sin tocar password_hash)
-    for (const u of t.teachers.filter(x => existingSet.has(x.id))) {
-      const { error } = await sb.from('raice_users').update({
-        username: u.username, first_name: u.first_name, last_name: u.last_name,
-        email: u.email || null, role: u.role, active: u.active ?? true
-      }).eq('id', u.id);
-      if (error) errors.push(`user_update ${u.username}: ${error.message}`);
+    // Dividir en lote para actualización e inserción
+    const toUpdate = t.teachers.filter(u => existingSet.has(u.id));
+    const toInsert = t.teachers.filter(u => !existingSet.has(u.id));
+
+    // 1. Bulk Update para existentes (campos no sensibles)
+    if (toUpdate.length) {
+      for (const b of toUpdate) {
+        const { error } = await sb.from('raice_users').update({
+          username: b.username, first_name: b.first_name, last_name: b.last_name,
+          email: b.email || null, role: b.role, active: b.active ?? true
+        }).eq('id', b.id);
+        if (error) errors.push(`user_update ${b.username}: ${error.message}`);
+      }
     }
 
-    // Insertar nuevos con contraseña temporal
-    const newUsers = t.teachers.filter(x => !existingSet.has(x.id));
-    if (newUsers.length) {
+    // 2. Bulk Insert para nuevos co contraseña temporal
+    if (toInsert.length) {
       const tempHash = await bcrypt.hash('Cambiar123!', 10);
-      const toInsert = newUsers.map(u => ({
+      const insertRows = toInsert.map(u => ({
         id: u.id, username: u.username, first_name: u.first_name,
         last_name: u.last_name, email: u.email || null,
         role: u.role, active: u.active ?? true, password_hash: tempHash
       }));
-      const { error } = await sb.from('raice_users').insert(toInsert);
+      // Bulk insert
+      const { error } = await sb.from('raice_users').insert(insertRows);
       if (error) errors.push('users_insert: ' + error.message);
     }
     results.users = t.teachers.length;
