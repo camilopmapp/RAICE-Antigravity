@@ -4167,15 +4167,21 @@
         const t = data.tables;
         preview.style.display = 'block';
         preview.innerHTML = `
-          <strong>📋 Contenido del archivo:</strong><br>
-          Exportado: <strong>${data.exported_at ? new Date(data.exported_at).toLocaleString('es-CO') : '?'}</strong> · 
-          Versión: <strong>${data.version || '?'}</strong><br><br>
-          👥 Estudiantes: <strong>${(t.students||[]).length}</strong> · 
-          📋 Asistencia: <strong>${(t.attendance||[]).length}</strong> · 
-          ⚠️ Casos: <strong>${(t.cases||[]).length}</strong> · 
-          🏫 Cursos: <strong>${(t.courses||[]).length}</strong><br>
-          📅 Citaciones: <strong>${(t.citations||[]).length}</strong> · 
-          🤝 Compromisos: <strong>${(t.commitments||[]).length}</strong>
+          <div style="margin-bottom:.5rem;border-bottom:1px solid var(--border);padding-bottom:.4rem;">
+            <strong>📦 Información del Backup:</strong><br>
+            <span style="font-size:.75rem;color:var(--gray);">Exportado: ${data.exported_at ? new Date(data.exported_at).toLocaleString('es-CO') : '?'} · Versión: ${data.version || '?'}</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;">
+            <div>👥 Estudiantes: <strong>${(t.students||[]).length}</strong></div>
+            <div>🏫 Cursos: <strong>${(t.courses||[]).length}</strong></div>
+            <div>📋 Asistencia: <strong>${(t.attendance||[]).length}</strong></div>
+            <div>⚠️ Casos: <strong>${(t.cases||[]).length}</strong></div>
+          </div>
+          <div style="margin-top:.6rem;padding-top:.5rem;border-top:1px dotted var(--border);display:flex;gap:.75rem;flex-wrap:wrap;">
+            <span>👨‍🏫 Docentes: <strong>${data.totals?.role_teachers || (t.teachers||[]).filter(u=>u.role==='teacher').length}</strong></span>
+            <span>🗂️ Coord: <strong>${data.totals?.role_coordinators || (t.teachers||[]).filter(u=>u.role==='admin').length}</strong></span>
+            <span>🏫 Rectores: <strong>${data.totals?.role_rectores || (t.teachers||[]).filter(u=>u.role==='rector').length}</strong></span>
+          </div>
         `;
         btn.disabled = false;
       } catch (err) {
@@ -4263,7 +4269,13 @@
         .filter(([, r]) => r > 0)
         .map(([k, r]) => `${labelMap[k]||k}: <strong>${r}</strong>`)
         .join(' · ');
-      status.innerHTML = `<span style="color:#15803d;">✅ ${data.message || 'Backup restaurado'}<br><small style="color:var(--navy)">${counts}</small>${data.errors?.length ? `<br><span style="color:#f59e0b;">⚠️ Advertencias: ${data.errors.slice(0,5).join('; ')}</span>` : ''}</span>`;
+      
+      const roleStats = `Restaurados: ${tables.users || 0} usuarios (Docentes: ${data.results?.role_teachers || 0}, Coord: ${data.results?.role_coordinators || 0}, Rectores: ${data.results?.role_rectores || 0})`;
+      
+      status.innerHTML = `<span style="color:#15803d;">✅ ${data.message || 'Backup restaurado'}<br>
+        <small style="color:var(--navy)">${counts}</small><br>
+        <small style="color:var(--teal);font-weight:600;">${roleStats}</small>
+        ${data.errors?.length ? `<br><span style="color:#f59e0b;">⚠️ Advertencias: ${data.errors.slice(0,5).join('; ')}</span>` : ''}</span>`;
       showToast('✅ Backup restaurado correctamente', 'success');
       clearImportFile();
     } else {

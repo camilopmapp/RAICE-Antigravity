@@ -147,6 +147,8 @@ export default async function handler(req, res) {
     if (route === 'raice/suspensions')           return await handleSuspensions(req, res, user);
     if (route === 'raice/attendance/unlock')     return await unlockAttendance(req, res, user);
 
+    if (route === 'raice/calendar/today')       return await handleGetTodayHoliday(req, res);
+
     // ---- TEACHER-SPECIFIC routes ----
     if (route === 'raice/my-courses')           return await getMyCourses(req, res, user);
     if (route === 'raice/attendance/course')    return await getAttendanceByCourse(req, res, user);
@@ -3597,6 +3599,9 @@ async function handleBackupExport(req, res, user) {
         observations:          observations.length,
         acudientes:            acudientes.length,
         teachers:              teachers.length,
+        role_teachers:         teachers.filter(u => u.role === 'teacher').length,
+        role_coordinators:      teachers.filter(u => u.role === 'admin').length,
+        role_rectores:         teachers.filter(u => u.role === 'rector').length,
         courses:               courses.length,
         schedules:             schedules.length,
         bell_schedule:         bellSchedule.length,
@@ -5475,6 +5480,24 @@ async function handleBackupImport(req, res, user) {
       ? `Restaurado con ${errors.length} advertencia(s)`
       : 'Backup restaurado correctamente'
   });
+}
+
+// ---- CALENDARIO: OBTENER FESTIVO DE HOY ----
+async function handleGetTodayHoliday(req, res) {
+  if (req.method !== 'GET') return res.status(405).end();
+  const sb = getSupabase();
+  
+  // Hoy en Colombia (UTC-5)
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date());
+
+  const { data, error } = await sb.from('raice_calendar')
+    .select('name, type')
+    .eq('date', today)
+    .eq('type', 'holiday')
+    .maybeSingle();
+
+  if (error) return res.status(500).json({ error: error.message });
+  return res.status(200).json({ holiday: data || null });
 }
 
 // ---- PORTAL PÚBLICO DEL ACUDIENTE (acceso por número de documento) ----
