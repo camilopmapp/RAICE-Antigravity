@@ -5326,6 +5326,26 @@ async function handleBackupImport(req, res, user) {
   const results = {};
   const errors  = [];
 
+  // ── PRE-IMPORT CLEANUP (Avoid UNIQUE conflicts) ─────────────────────────
+  async function clearTable(tableName) {
+    const { error } = await sb.from(tableName).delete().filter('id', 'neq', '00000000-0000-0000-0000-000000000000');
+    if (error) errors.push(`clearing ${tableName}: ${error.message}`);
+  }
+
+  // Orden de borrado (hijos primero para evitar FK errors)
+  const tablesToClear = [
+    'raice_logs', 'raice_notifications', 'raice_absence_replacements',
+    'raice_student_grade_history', 'raice_tipo1_escalones', 'raice_followups',
+    'raice_citations', 'raice_commitments', 'raice_observations',
+    'raice_excusas', 'raice_attendance', 'raice_teacher_absences',
+    'raice_teacher_courses', 'raice_schedules', 'raice_classroom_removals',
+    'raice_suspensions', 'raice_cases', 'raice_acudientes', 'raice_students',
+    'raice_courses', 'raice_bell_schedule', 'raice_faltas_catalogo',
+    'raice_periods', 'raice_calendar'
+  ];
+  for (const table of tablesToClear) { await clearTable(table); }
+  // ─────────────────────────────────────────────────────────────────────────
+
   // Upsert en lotes — captura errores por tabla sin abortar el resto
   async function upsertBatch(tableName, rows, batchSize = 300) {
     if (!rows || !rows.length) return 0;
